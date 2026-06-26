@@ -14,6 +14,7 @@ import { RegionModule } from './region/region.module';
 import { SchoolModule } from './school/school.module';
 import { TestModule } from './test/test.module';
 import { RoleModule } from './role/role.module';
+import { FeedbackModule } from './feedback/feedback.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { RoleModule } from './role/role.module';
     CompetencyModule,
     TestModule,
     SeederModule,
+    FeedbackModule,
   ],
   controllers: [AppController],
   providers: [AppService],

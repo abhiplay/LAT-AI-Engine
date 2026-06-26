@@ -4,6 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import Groq from 'groq-sdk';
 import OpenAI from 'openai';
 import * as https from 'https';
+import { FeedbackContext } from '../feedback/feedback.service';
 
 export interface GeneratedMCQ {
   questionText: string;
@@ -162,8 +163,39 @@ Example: "Read the description carefully: A clock shows the hour hand pointing t
 export class LlmService {
   constructor(private config: ConfigService) {}
 
-  private buildPrompt(grade: string, subject: string, competency: string, instructions: string, questionType = 'scenario'): string {
+  private buildPrompt(grade: string, subject: string, competency: string, instructions: string, questionType = 'scenario', feedbackContext?: FeedbackContext): string {
     const typePrompt = QUESTION_TYPE_PROMPTS[questionType] ?? QUESTION_TYPE_PROMPTS['scenario'];
+
+    let ragSection = '';
+    if (feedbackContext) {
+      if (feedbackContext.approvedExamples.length > 0) {
+        ragSection += `\n=== APPROVED EXAMPLES (mimic this quality and style) ===\n`;
+        ragSection += `These questions were reviewed and APPROVED by human experts. Generate questions of similar quality:\n\n`;
+        feedbackContext.approvedExamples.forEach((ex, i) => {
+          const optionStr = ex.options.length > 0
+            ? ex.options.map(o => `${o.key}) ${o.value}`).join(' | ')
+            : '(options not stored)';
+          ragSection += `Example ${i + 1}:\n`;
+          ragSection += `Question: ${ex.questionText}\n`;
+          if (optionStr !== '(options not stored)') ragSection += `Options: ${optionStr}\n`;
+          ragSection += `Correct Answer: ${ex.correctAnswer}\n`;
+          if (ex.explanation) ragSection += `Explanation: ${ex.explanation}\n`;
+          ragSection += `\n`;
+        });
+      }
+
+      if (feedbackContext.rejectedExamples.length > 0) {
+        ragSection += `\n=== AVOID THESE PATTERNS (previously rejected) ===\n`;
+        ragSection += `These questions were REJECTED by human experts. Do NOT repeat these mistakes:\n\n`;
+        feedbackContext.rejectedExamples.forEach((ex, i) => {
+          ragSection += `Bad Example ${i + 1}:\n`;
+          ragSection += `Question: ${ex.questionText}\n`;
+          if (ex.rejectionReason) ragSection += `Reason rejected: ${ex.rejectionReason}\n`;
+          ragSection += `\n`;
+        });
+      }
+    }
+
     return `You are an expert MCQ question setter for KV (Kendriya Vidyalaya) schools.
 You follow the CAMS AI Question Generation Framework and PARAKH/LAT assessment philosophy.
 
@@ -171,7 +203,7 @@ GRADE: ${grade}
 SUBJECT: ${subject}
 COMPETENCY: ${competency}
 ADDITIONAL INSTRUCTIONS: ${instructions || 'None'}
-
+${ragSection}
 === QUESTION TYPE INSTRUCTIONS ===
 ${typePrompt}
 
@@ -293,29 +325,29 @@ For BAR CHART (image-data) — NO imagePrompt, chart is drawn as SVG:
     }
   }
 
-  async generateWithGemini(grade: string, subject: string, competency: string, instructions: string, questionType: string): Promise<GeneratedMCQ> {
+  async generateWithGemini(grade: string, subject: string, competency: string, instructions: string, questionType: string, feedbackContext?: FeedbackContext): Promise<GeneratedMCQ> {
     const genAI = new GoogleGenerativeAI(this.config.get('GEMINI_API_KEY') ?? '');
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent(this.buildPrompt(grade, subject, competency, instructions, questionType));
+    const result = await model.generateContent(this.buildPrompt(grade, subject, competency, instructions, questionType, feedbackContext));
     const text = result.response.text();
     return this.parseResponse(text);
   }
 
-  async generateWithGroq(grade: string, subject: string, competency: string, instructions: string, questionType: string): Promise<GeneratedMCQ> {
+  async generateWithGroq(grade: string, subject: string, competency: string, instructions: string, questionType: string, feedbackContext?: FeedbackContext): Promise<GeneratedMCQ> {
     const groq = new Groq({ apiKey: this.config.get('GROQ_API_KEY') ?? '' });
     const completion = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
-      messages: [{ role: 'user', content: this.buildPrompt(grade, subject, competency, instructions, questionType) }],
+      messages: [{ role: 'user', content: this.buildPrompt(grade, subject, competency, instructions, questionType, feedbackContext) }],
       response_format: { type: 'json_object' },
     });
     return JSON.parse(completion.choices[0].message.content ?? '{}');
   }
 
-  async generateWithOpenAI(grade: string, subject: string, competency: string, instructions: string, questionType: string): Promise<GeneratedMCQ> {
+  async generateWithOpenAI(grade: string, subject: string, competency: string, instructions: string, questionType: string, feedbackContext?: FeedbackContext): Promise<GeneratedMCQ> {
     const openai = new OpenAI({ apiKey: this.config.get('OPENAI_API_KEY') });
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: this.buildPrompt(grade, subject, competency, instructions, questionType) }],
+      messages: [{ role: 'user', content: this.buildPrompt(grade, subject, competency, instructions, questionType, feedbackContext) }],
       response_format: { type: 'json_object' },
     });
     return JSON.parse(completion.choices[0].message.content ?? '{}');
@@ -328,12 +360,12 @@ For BAR CHART (image-data) — NO imagePrompt, chart is drawn as SVG:
     return `https://image.pollinations.ai/prompt/${encoded}?width=600&height=400&nologo=true&enhance=false&model=flux`;
   }
 
-  async generate(llm: string, grade: string, subject: string, competency: string, instructions: string, questionType: string): Promise<GeneratedMCQ> {
+  async generate(llm: string, grade: string, subject: string, competency: string, instructions: string, questionType: string, feedbackContext?: FeedbackContext): Promise<GeneratedMCQ> {
     let mcq: GeneratedMCQ;
     switch (llm) {
-      case 'gemini': mcq = await this.generateWithGemini(grade, subject, competency, instructions, questionType); break;
-      case 'groq': mcq = await this.generateWithGroq(grade, subject, competency, instructions, questionType); break;
-      case 'openai': mcq = await this.generateWithOpenAI(grade, subject, competency, instructions, questionType); break;
+      case 'gemini': mcq = await this.generateWithGemini(grade, subject, competency, instructions, questionType, feedbackContext); break;
+      case 'groq': mcq = await this.generateWithGroq(grade, subject, competency, instructions, questionType, feedbackContext); break;
+      case 'openai': mcq = await this.generateWithOpenAI(grade, subject, competency, instructions, questionType, feedbackContext); break;
       default: throw new BadRequestException(`Unknown LLM: ${llm}`);
     }
 

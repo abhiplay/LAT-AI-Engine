@@ -3,12 +3,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Question, QuestionStatus } from './question.entity';
 import { LlmService } from './llm.service';
+import { FeedbackService } from '../feedback/feedback.service';
 
 @Injectable()
 export class QuestionService {
   constructor(
     @InjectRepository(Question) private repo: Repository<Question>,
     private llmService: LlmService,
+    private feedbackService: FeedbackService,
   ) {}
 
   async generate(dto: {
@@ -17,11 +19,17 @@ export class QuestionService {
     competencyId: number; competencyCode: string; competencyDescription: string;
     llm: string; instructions: string; questionType: string;
   }) {
+    const feedbackContext = await this.feedbackService.getSimilarApproved(
+      dto.competencyCode, dto.gradeName, dto.subjectName,
+      `${dto.competencyCode}: ${dto.competencyDescription}`,
+    );
+
     const mcq = await this.llmService.generate(
       dto.llm, dto.gradeName, dto.subjectName,
       `${dto.competencyCode}: ${dto.competencyDescription}`,
       dto.instructions,
       dto.questionType,
+      feedbackContext,
     );
     return { ...mcq, llmUsed: dto.llm, questionType: dto.questionType };
   }
@@ -52,6 +60,23 @@ export class QuestionService {
 
   async updateStatus(id: number, status: QuestionStatus, rejectionReason?: string) {
     await this.repo.update(id, { status, rejectionReason: rejectionReason ?? undefined });
-    return this.repo.findOne({ where: { id } });
+    const question = await this.repo.findOne({ where: { id } });
+
+    if (question) {
+      await this.feedbackService.recordFeedback({
+        id: question.id,
+        competencyCode: question.competencyCode,
+        gradeName: question.gradeName,
+        subjectName: question.subjectName,
+        questionType: question.questionType,
+        questionText: question.questionText,
+        options: question.options,
+        correctAnswer: question.correctAnswer,
+        explanation: question.explanation,
+        llmUsed: question.llmUsed,
+      }, status as 'approved' | 'rejected', rejectionReason);
+    }
+
+    return question;
   }
 }
